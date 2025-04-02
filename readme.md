@@ -53,7 +53,7 @@ uvicorn app.main:app --reload
 
 ```bash
 # Перейти в директорию фронтенда
-cd frontend
+cd my-app
 
 # Установить зависимости
 npm install
