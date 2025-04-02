@@ -1,0 +1,374 @@
+# Инструкция по развертыванию приложения для управления резюме
+
+## Содержание
+1. Подготовка сервера
+2. Установка необходимых зависимостей
+3. Настройка бэкенда (FastAPI)
+4. Настройка фронтенда (React)
+5. Настройка Apache2
+6. Конфигурация SSL
+7. Запуск и тестирование
+8. Устранение типичных проблем
+
+## 1. Подготовка сервера
+
+### Обновление системы
+
+```bash
+# Обновление списка пакетов и установка обновлений
+sudo apt update
+sudo apt upgrade -y
+
+# Установка базовых утилит
+sudo apt install -y curl wget vim git htop
+```
+
+## 2. Установка необходимых зависимостей
+
+### Установка Python и инструментов
+
+```bash
+# Установка Python и pip
+sudo apt install -y python3 python3-pip python3-dev python3-venv
+
+# Установка инструментов для компиляции
+sudo apt install -y build-essential libssl-dev libffi-dev
+```
+
+### Установка Node.js и npm
+
+```bash
+# Установка Node.js через репозиторий NodeSource
+curl -sL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Проверка установки
+node -v
+npm -v
+```
+
+### Установка Apache2
+
+```bash
+# Установка Apache2
+sudo apt install -y apache2 apache2-utils
+
+# Установка модулей Apache2 для проксирования запросов
+sudo apt install -y libapache2-mod-proxy-uwsgi libapache2-mod-proxy-html libxml2-dev
+
+# Включение необходимых модулей
+sudo a2enmod proxy
+sudo a2enmod proxy_http
+sudo a2enmod proxy_ajp
+sudo a2enmod rewrite
+sudo a2enmod deflate
+sudo a2enmod headers
+sudo a2enmod proxy_balancer
+sudo a2enmod proxy_connect
+sudo a2enmod proxy_html
+sudo a2enmod ssl
+
+# Перезапуск Apache2
+sudo systemctl restart apache2
+```
+
+## 3. Настройка бэкенда (FastAPI)
+
+### Клонирование репозитория проекта
+
+```bash
+# Создаем директорию для приложения
+sudo mkdir -p /var/www/resume-app
+sudo chown -R $USER:$USER /var/www/resume-app
+
+# Клонирование проекта (или перенос файлов вручную)
+git clone https://your-repository-url.git /var/www/resume-app
+# Или переносим файлы вручную в эту директорию
+```
+
+### Настройка виртуального окружения Python и зависимостей
+
+```bash
+# Переход в директорию бэкенда
+cd /var/www/resume-app/backend
+
+# Создание виртуального окружения
+python3 -m venv venv
+
+# Активация виртуального окружения
+source venv/bin/activate
+
+# Установка зависимостей
+pip install -r requirements.txt
+
+# Если файла requirements.txt нет, установите основные зависимости
+pip install fastapi uvicorn sqlalchemy pydantic python-jose[cryptography] passlib[bcrypt] python-multipart aiofiles
+
+# Создание файла requirements.txt (если его еще нет)
+pip freeze > requirements.txt
+```
+
+### Настройка базы данных
+
+```bash
+# Переход в директорию бэкенда
+cd /var/www/resume-app/backend
+
+# Создаем директорию для загрузок
+mkdir -p uploads
+chmod 755 uploads
+
+# Активация виртуального окружения
+source venv/bin/activate
+
+# Создание администратора
+python create_admin.py admin@example.com your_secure_password
+```
+
+### Создание systemd сервиса для запуска FastAPI
+
+```bash
+# Создаем файл сервиса
+sudo nano /etc/systemd/system/resume-api.service
+```
+
+Содержимое файла:
+
+```ini
+[Unit]
+Description=Resume API service
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/resume-app/backend
+ExecStart=/var/www/resume-app/backend/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+# Перенаправление стандартного вывода и ошибок
+StandardOutput=file:/var/log/resume-api-out.log
+StandardError=file:/var/log/resume-api-error.log
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Запуск сервиса:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start resume-api
+sudo systemctl enable resume-api
+sudo systemctl status resume-api
+```
+
+## 4. Настройка фронтенда (React)
+
+### Сборка фронтенда
+
+```bash
+# Переход в директорию фронтенда
+cd /var/www/resume-app/frontend
+
+# Установка зависимостей
+npm install
+
+# Сборка для production
+npm run build
+```
+
+## 5. Настройка Apache2
+
+### Создание конфигурации виртуального хоста
+
+```bash
+sudo nano /etc/apache2/sites-available/resume-app.conf
+```
+
+Содержимое файла:
+
+```apache
+<VirtualHost *:80>
+    ServerName your-domain.com
+    ServerAdmin webmaster@your-domain.com
+    DocumentRoot /var/www/resume-app/frontend/dist
+
+    # Настройка директории фронтенда
+    <Directory /var/www/resume-app/frontend/dist>
+        Options -Indexes +FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    # Настройка API
+    ProxyPass /api http://127.0.0.1:8000/api
+    ProxyPassReverse /api http://127.0.0.1:8000/api
+
+    # Настройка статических файлов для загруженных резюме
+    ProxyPass /uploads http://127.0.0.1:8000/uploads
+    ProxyPassReverse /uploads http://127.0.0.1:8000/uploads
+
+    # Правило для клиентского роутинга React (все неизвестные пути отправляются к index.html)
+    <Directory /var/www/resume-app/frontend/dist>
+        RewriteEngine On
+        RewriteBase /
+        RewriteRule ^index\.html$ - [L]
+        RewriteCond %{REQUEST_FILENAME} !-f
+        RewriteCond %{REQUEST_FILENAME} !-d
+        RewriteRule . /index.html [L]
+    </Directory>
+
+    # Настройка логов
+    ErrorLog ${APACHE_LOG_DIR}/resume-app-error.log
+    CustomLog ${APACHE_LOG_DIR}/resume-app-access.log combined
+</VirtualHost>
+```
+
+### Активация конфигурации и перезапуск Apache2
+
+```bash
+sudo a2ensite resume-app.conf
+sudo systemctl restart apache2
+```
+
+## 6. Конфигурация SSL (для HTTPS)
+
+### Установка Certbot и получение SSL-сертификата
+
+```bash
+# Установка Certbot
+sudo apt install -y certbot python3-certbot-apache
+
+# Получение SSL-сертификата
+sudo certbot --apache -d your-domain.com
+```
+
+### Настройка автоматического обновления сертификата
+
+```bash
+# Проверка работы автоматического обновления
+sudo certbot renew --dry-run
+```
+
+## 7. Запуск и тестирование
+
+### Проверка статуса служб
+
+```bash
+# Проверка статуса API
+sudo systemctl status resume-api
+
+# Проверка статуса Apache2
+sudo systemctl status apache2
+```
+
+### Проверка логов
+
+```bash
+# Логи API
+sudo tail -f /var/log/resume-api-out.log
+sudo tail -f /var/log/resume-api-error.log
+
+# Логи Apache2
+sudo tail -f /var/log/apache2/resume-app-access.log
+sudo tail -f /var/log/apache2/resume-app-error.log
+```
+
+### Тестирование API
+
+```bash
+# Проверка доступности API
+curl http://your-domain.com/api
+```
+
+## 8. Устранение типичных проблем
+
+### Проблемы с правами доступа
+
+```bash
+# Настройка прав доступа для директории uploads
+sudo chown -R www-data:www-data /var/www/resume-app/backend/uploads
+sudo chmod -R 755 /var/www/resume-app/backend/uploads
+
+# Настройка прав доступа для базы данных
+sudo chown www-data:www-data /var/www/resume-app/backend/resume_app.db
+sudo chmod 644 /var/www/resume-app/backend/resume_app.db
+```
+
+### Проблемы с CORS
+
+Если возникают проблемы с CORS, проверьте настройки в main.py:
+
+```python
+# main.py
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://your-domain.com"],  # Обновить на реальный домен
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+### Проблема с клиентским роутингом React
+
+Убедитесь, что в vite.config.js настроена правильная базовая директория:
+
+```javascript
+// vite.config.js
+export default {
+  // ...
+  base: '/',
+  // ...
+}
+```
+
+## Дополнительные рекомендации
+
+### Настройка файрвола
+
+```bash
+# Установка и настройка UFW
+sudo apt install -y ufw
+sudo ufw allow ssh
+sudo ufw allow http
+sudo ufw allow https
+sudo ufw enable
+```
+
+### Настройка бэкапов
+
+```bash
+# Создание скрипта для бэкапа базы данных
+sudo nano /usr/local/bin/backup-resume-app.sh
+```
+
+Содержимое скрипта:
+
+```bash
+#!/bin/bash
+DATE=$(date +%Y-%m-%d)
+BACKUP_DIR="/var/backups/resume-app"
+
+# Создание директории для бэкапов
+mkdir -p $BACKUP_DIR
+
+# Бэкап базы данных
+cp /var/www/resume-app/backend/resume_app.db $BACKUP_DIR/resume_app_$DATE.db
+
+# Бэкап загруженных файлов
+tar -czf $BACKUP_DIR/uploads_$DATE.tar.gz /var/www/resume-app/backend/uploads
+
+# Хранение только последних 7 бэкапов
+find $BACKUP_DIR -name "resume_app_*.db" -type f -mtime +7 -delete
+find $BACKUP_DIR -name "uploads_*.tar.gz" -type f -mtime +7 -delete
+```
+
+Настройка прав и планировщика:
+
+```bash
+sudo chmod +x /usr/local/bin/backup-resume-app.sh
+sudo crontab -e
+```
+
+Добавить строку для ежедневного бэкапа:
